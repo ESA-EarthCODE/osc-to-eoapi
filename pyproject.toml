@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osc-to-eoapi"
+version = "0.1.0"
+description = "A tool to crawl OSC STAC catalogs and ingest them into eoapi"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+dependencies = [
+    "pystac>=1.10.0",
+    "requests>=2.31.0",
+    "typer[all]>=0.9.0",
+    "rich>=13.7.0",
+    "psycopg[binary]>=3.1.0",
+    "psycopg-pool>=3.1.0",
+    "pypgstac>=0.8.0",
+    "python-dateutil>=2.8.2",
+    "pydantic>=2.0.0",
+    "aiohttp>=3.9.0"
+]
+
+[project.scripts]
+osc-to-eoapi = "osc_to_eoapi.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py38"

@@ -1,0 +1,30 @@
+services:
+  db:
+    image: ghcr.io/stac-utils/pgstac:v0.8.5
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: adminpassword
+      POSTGRES_DB: eoapi
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d eoapi"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  stac-api:
+    image: ghcr.io/stac-utils/stac-fastapi-pgstac:2.4.9
+    command: uvicorn stac_fastapi.pgstac.app:app --host 0.0.0.0 --port 8080
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASS: adminpassword
+      POSTGRES_DBNAME: eoapi
+      POSTGRES_HOST_READER: db
+      POSTGRES_HOST_WRITER: db
+      POSTGRES_PORT: 5432
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
