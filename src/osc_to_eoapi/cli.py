@@ -1,7 +1,7 @@
 import json
 import subprocess
 import typer
-from typing import Optional
+from typing import Optional, List
 from osc_to_eoapi.crawler import OSCCrawler
 from osc_to_eoapi.utils import test_endpoint, reset_database
 
@@ -25,6 +25,8 @@ def crawl(
     test_api: bool = typer.Option(False, "--test-endpoint", help="Test if the STAC API is reachable before starting"),
     crawl_external: bool = typer.Option(False, "--crawl-external", help="Enable recursive crawling of external STAC links"),
     kb_cache: str = typer.Option("kb_cache.json", "--kb-cache", help="Path to cache the knowledge base. Set to empty string '' to disable."),
+    skip_collection: Optional[List[str]] = typer.Option(None, "--skip-collection", help="Collection ID to skip if already present in the API"),
+    categories: Optional[List[str]] = typer.Option(["products", "experiments", "workflows"], "--category", help="Categories to crawl. Can be specified multiple times (e.g. --category workflows --category experiments)"),
     debug: bool = typer.Option(False, "--debug", help="Enable verbose debug logging for catalog traversal"),
 ):
     """
@@ -47,6 +49,8 @@ def crawl(
         overwrite=overwrite,
         crawl_external=crawl_external,
         kb_cache_file=actual_kb_cache,
+        skip_collections=skip_collection,
+        categories=categories,
         debug=debug
     )
     crawler.run()

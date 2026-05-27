@@ -33,6 +33,7 @@ wheels/
 
 # Local Testing
 venv
+.venv
 kb_cache.json
 GEMINI.md
 osc_queryables.json

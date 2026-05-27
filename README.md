@@ -26,6 +26,8 @@ osc-to-eoapi crawl [OPTIONS]
 - `--test-endpoint`: Perform a health check on the STAC API before starting.
 - `--crawl-external`: Enable recursive crawling of external STAC links found in the catalog. Includes cycle detection to prevent infinite loops.
 - `--kb-cache TEXT`: Path to a local JSON file to cache the taxonomies (variables, projects, etc.) to significantly speed up subsequent runs. In order to disable it set it to an empty string. (Default: `kb_cache.json`)
+- `--skip-collection TEXT`: Collection ID to skip if it is already present in the target API. Can be provided multiple times (e.g., `--skip-collection "col1" --skip-collection "col2"`).
+- `--category TEXT`: Specific category to crawl. Defaults to crawling all categories (`products`, `experiments`, `workflows`). Can be provided multiple times (e.g., `--category workflows --category experiments`).
 - `--debug`: Enable verbose debug logging to trace the recursive traversal of external catalogs and item discovery. Useful for identifying bottlenecks or infinite loops in remote datasets.
 
 ### Loading Queryables
