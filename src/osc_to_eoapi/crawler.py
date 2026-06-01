@@ -125,6 +125,14 @@ class OSCCrawler:
         for k, v in getattr(pgstac_collection, 'extra_fields', {}).items():
             if k not in col_dict:
                 col_dict[k] = v
+
+        # Fix invalid BBOX [90, 180, -90, -180] if present
+        if "extent" in col_dict and "spatial" in col_dict["extent"] and "bbox" in col_dict["extent"]["spatial"]:
+            bboxes = col_dict["extent"]["spatial"]["bbox"]
+            for i, bbox in enumerate(bboxes):
+                if bbox == [90, 180, -90, -180]:
+                    console.print(f"[bold yellow]  [!] Warning: Detected invalid global BBOX [90, 180, -90, -180] in {pgstac_collection.id}. Correcting to [-180, -90, 180, 90].[/bold yellow]")
+                    col_dict["extent"]["spatial"]["bbox"][i] = [-180, -90, 180, 90]
                 
         col_dict["links"] = [
             {
@@ -182,50 +190,53 @@ class OSCCrawler:
             
         return fixed_links
 
-    def ingest_entity(self, endpoint: str, payload: Dict[str, Any]):
+    def ingest_entity(self, endpoint: str, payload: Dict[str, Any]) -> bool:
         # Update and filter links
         payload["links"] = self.prepare_links(payload)
+        entity_id = payload.get("id")
         
         try:
             target_url = f"{self.eoapi_url}/{endpoint}"
+            individual_url = target_url
+            if "items" not in endpoint:
+                individual_url = f"{target_url}/{entity_id}"
+            else:
+                # endpoint is likely collections/col_id/items
+                individual_url = f"{target_url}/{entity_id}"
+
             if self.overwrite:
                 # Try to delete first
-                item_id = payload.get("id")
-                if "items" in endpoint:
-                    # e.g. collections/col_id/items/item_id
-                    self.session.delete(f"{target_url}/{item_id}")
-                else:
-                    # e.g. collections/col_id
-                    self.session.delete(target_url)
+                self.session.delete(individual_url)
 
             resp = self.session.post(target_url, json=payload)
             
             if resp.status_code in (200, 201):
                 self.stats["api_success"] += 1
+                return True
             elif resp.status_code == 409:
                 if self.update:
                     # Update existing
-                    if "items" in endpoint:
-                        item_id = payload.get("id")
-                        put_url = f"{target_url}/{item_id}"
-                        resp = self.session.put(put_url, json=payload)
-                    else:
-                        resp = self.session.put(target_url, json=payload)
+                    resp = self.session.put(individual_url, json=payload)
                     
                     if resp.status_code in (200, 204):
                         self.stats["api_success"] += 1
+                        return True
                     else:
                         self.stats["api_errors"] += 1
-                        if self.debug: console.print(f"[bold red]    [!] Failed to update {payload.get('id')}: {resp.text}[/bold red]")
+                        console.print(f"[bold red]    [!] Failed to update {entity_id}: {resp.text}[/bold red]")
+                        return False
                 else:
-                    # Skip
+                    # Skip (consider success as it exists)
                     self.stats["api_success"] += 1
+                    return True
             else:
                 self.stats["api_errors"] += 1
-                if self.debug: console.print(f"[bold red]    [!] Failed to ingest {payload.get('id')}: {resp.text}[/bold red]")
+                console.print(f"[bold red]    [!] Failed to ingest {entity_id} at {target_url}: {resp.text}[/bold red]")
+                return False
         except Exception as e:
             self.stats["api_errors"] += 1
-            if self.debug: console.print(f"[bold red]    [!] API connection error for {payload.get('id')}: {e}[/bold red]")
+            console.print(f"[bold red]    [!] API connection error for {entity_id}: {e}[/bold red]")
+            return False
 
     def build_knowledge_base(self, root_catalog: pystac.Catalog):
         if self.debug:
@@ -277,12 +288,16 @@ class OSCCrawler:
     async def _async_ingest_entity(self, session: aiohttp.ClientSession, endpoint: str, payload: Dict[str, Any]):
         payload["links"] = self.prepare_links(payload)
         target_url = f"{self.eoapi_url}/{endpoint}"
-        item_id = payload.get("id")
+        entity_id = payload.get("id")
+        individual_url = target_url
+        if "items" not in endpoint:
+            individual_url = f"{target_url}/{entity_id}"
+        else:
+            individual_url = f"{target_url}/{entity_id}"
 
         try:
             if self.overwrite:
-                del_url = f"{target_url}/{item_id}" if "items" in endpoint else target_url
-                async with session.delete(del_url) as resp:
+                async with session.delete(individual_url) as resp:
                     await resp.read()
 
             async with session.post(target_url, json=payload) as resp:
@@ -293,21 +308,20 @@ class OSCCrawler:
                 self.stats["api_success"] += 1
             elif status == 409:
                 if self.update:
-                    put_url = f"{target_url}/{item_id}" if "items" in endpoint else target_url
-                    async with session.put(put_url, json=payload) as resp:
+                    async with session.put(individual_url, json=payload) as resp:
                         if resp.status in (200, 204):
                             self.stats["api_success"] += 1
                         else:
                             self.stats["api_errors"] += 1
-                            if self.debug: console.print(f"[bold red]    [!] Failed to update {item_id}: {await resp.text()}[/bold red]")
+                            console.print(f"[bold red]    [!] Failed to update {entity_id}: {await resp.text()}[/bold red]")
                 else:
                     self.stats["api_success"] += 1
             else:
                 self.stats["api_errors"] += 1
-                if self.debug: console.print(f"[bold red]    [!] Failed to ingest {item_id}: {text}[/bold red]")
+                console.print(f"[bold red]    [!] Failed to ingest {entity_id} at {target_url}: {text}[/bold red]")
         except Exception as e:
             self.stats["api_errors"] += 1
-            if self.debug: console.print(f"[bold red]    [!] API connection error for {item_id}: {e}[/bold red]")
+            console.print(f"[bold red]    [!] API connection error for {entity_id}: {e}[/bold red]")
 
     async def _async_process_record(self, session: aiohttp.ClientSession, href: str, parent_links: List[Any], collection_id: Optional[str] = None, category: Optional[str] = None) -> Optional[Dict[str, Any]]:
         if self.debug: console.print(f"      [dim]Fetching item: {href}[/dim]")
@@ -485,7 +499,11 @@ class OSCCrawler:
         col_dict = self.prepare_collection(collection, collection.links)
         
         # Ingest the collection synchronously first
-        self.ingest_entity("collections", col_dict)
+        success = self.ingest_entity("collections", col_dict)
+        if not success:
+            console.print(f"  [bold red][!] Aborting item ingestion for {collection.id} due to collection ingestion failure.[/bold red]")
+            return
+
         if category in ["products", None]:
             self.stats["products_processed"] += 1
             
@@ -603,9 +621,11 @@ class OSCCrawler:
                                     
                                     # Ingest Collection (Workflows have no items of their own)
                                     col_dict = self.prepare_collection(workflow_collection, all_links)
-                                    self.ingest_entity("collections", col_dict)
-                                    console.print(f"  [+] Ingested Workflow Collection: [bold]{workflow_id}[/bold]")
-                                    self.stats["workflows_processed"] += 1
+                                    if self.ingest_entity("collections", col_dict):
+                                        console.print(f"  [+] Ingested Workflow Collection: [bold]{workflow_id}[/bold]")
+                                        self.stats["workflows_processed"] += 1
+                                    else:
+                                        console.print(f"  [red]  [!] Failed to ingest workflow collection {workflow_id}[/red]")
                                     
                                 except Exception as e:
                                     self.stats["fetch_errors"] += 1
