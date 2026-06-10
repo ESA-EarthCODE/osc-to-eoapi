@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "osc-to-eoapi"
-version = "0.1.2"
+version = "0.1.3"
 description = "A tool to crawl OSC STAC catalogs and ingest them into eoapi"
 readme = "README.md"
 requires-python = ">=3.8"
