@@ -24,6 +24,8 @@ class OSCCrawler:
         kb_cache_file: Optional[str] = None,
         skip_collections: Optional[List[str]] = None,
         categories: Optional[List[str]] = None,
+        add_source_links: bool = False,
+        source_base_url: Optional[str] = None,
         debug: bool = False,
     ):
         self.github_url = github_url
@@ -35,6 +37,8 @@ class OSCCrawler:
         self.kb_cache_file = kb_cache_file
         self.skip_collections = set(skip_collections or [])
         self.categories = categories or ["products", "experiments", "workflows"]
+        self.add_source_links = add_source_links
+        self.source_base_url = source_base_url.rstrip('/') if source_base_url else None
         self.debug = debug
         self.session = requests.Session()
         
@@ -64,6 +68,12 @@ class OSCCrawler:
             "coordinates": [[[-180.0, -90.0], [180.0, -90.0], [180.0, 90.0], [-180.0, 90.0], [-180.0, -90.0]]]
         }
 
+    def _get_source_url(self, url: str) -> str:
+        """Translates a source URL to use the source_base_url if configured."""
+        if not self.source_base_url or not url.startswith(self.base_url):
+            return url
+        return url.replace(self.base_url, self.source_base_url, 1)
+
     def enrich_properties(self, properties: Dict[str, Any], links: List[Any]) -> Dict[str, Any]:
         if "keywords" not in properties or not isinstance(properties["keywords"], list):
             properties["keywords"] = []
@@ -78,7 +88,11 @@ class OSCCrawler:
                         tax_id = href.split(f"/{folder_name}/")[1].split('/')[0]
                         if tax_id in self.knowledge_base[tax_key]:
                             singular = tax_key[:-1]
-                            properties[f"osc:{singular}"] = tax_id
+                            # Only "project" is a valid osc:* singular property here according to the schema
+                            if singular == "project":
+                                properties["osc:project"] = tax_id
+                            else:
+                                properties[f"kb:{singular}"] = tax_id
                             properties["keywords"].append(f"{singular}_{tax_id}")
                             
                             kb_data = self.knowledge_base[tax_key][tax_id]
@@ -95,7 +109,7 @@ class OSCCrawler:
             
         return properties
 
-    def prepare_collection(self, catalog_or_collection: pystac.STACObject, kb_links: List[Any]) -> Dict[str, Any]:
+    def prepare_collection(self, catalog_or_collection: pystac.STACObject, kb_links: List[Any], source_url: Optional[str] = None) -> Dict[str, Any]:
         if isinstance(catalog_or_collection, pystac.Collection):
             pgstac_collection = catalog_or_collection.clone()
         else:
@@ -133,8 +147,17 @@ class OSCCrawler:
                 if bbox == [90, 180, -90, -180]:
                     console.print(f"[bold yellow]  [!] Warning: Detected invalid global BBOX [90, 180, -90, -180] in {pgstac_collection.id}. Correcting to [-180, -90, 180, 90].[/bold yellow]")
                     col_dict["extent"]["spatial"]["bbox"][i] = [-180, -90, 180, 90]
+        
+        self_href = f"{self.eoapi_url}/collections/{pgstac_collection.id}"
+        if self.add_source_links and source_url:
+            self_href = self._get_source_url(source_url)
                 
         col_dict["links"] = [
+            {
+                "rel": "self",
+                "type": "application/json",
+                "href": self_href
+            },
             {
                 "rel": "queryables",
                 "type": "application/schema+json",
@@ -142,11 +165,16 @@ class OSCCrawler:
                 "href": f"{self.eoapi_url}/collections/{pgstac_collection.id}/queryables"
             }
         ]
+        
+        if self.add_source_links and source_url:
+            source_href = self._get_source_url(source_url)
+            col_dict["links"].append({"rel": "canonical", "type": "application/json", "href": source_href})
+            
         return col_dict
 
     def prepare_links(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         links = payload.get("links", [])
-        allowed_rels = ["self", "queryables", "related", "child", "parent", "item", "about", "derived_from", "root"]
+        allowed_rels = ["self", "queryables", "related", "child", "parent", "item", "about", "derived_from", "root", "canonical"]
         fixed_links = []
         
         for link in links:
@@ -155,6 +183,13 @@ class OSCCrawler:
                 continue
                 
             href = link.get("href", "")
+            
+            # If add_source_links is enabled, translate absolute self, parent, root, canonical links too
+            if self.add_source_links and rel in ["self", "parent", "root", "canonical"] and href.startswith("http"):
+                link["href"] = self._get_source_url(href)
+                fixed_links.append(link)
+                continue
+
             if not href or href.startswith("http"):
                 fixed_links.append(link)
                 continue
@@ -163,18 +198,20 @@ class OSCCrawler:
             parts = href.split('/')
             new_href = None
             
-            if "workflows" in parts:
-                idx = parts.index("workflows")
-                if len(parts) > idx + 1:
-                    wf_id = parts[idx + 1]
-                    if "workflow" not in wf_id.lower():
-                        wf_id = f"{wf_id}-workflow"
-                    new_href = f"{self.eoapi_url}/collections/{wf_id}"
-            elif "products" in parts:
-                idx = parts.index("products")
-                if len(parts) > idx + 1:
-                    prod_id = parts[idx + 1]
-                    new_href = f"{self.eoapi_url}/collections/{prod_id}"
+            # Only attempt API mapping if not preferring source links
+            if not self.add_source_links:
+                if "workflows" in parts:
+                    idx = parts.index("workflows")
+                    if len(parts) > idx + 1:
+                        wf_id = parts[idx + 1]
+                        if "workflow" not in wf_id.lower():
+                            wf_id = f"{wf_id}-workflow"
+                        new_href = f"{self.eoapi_url}/collections/{wf_id}"
+                elif "products" in parts:
+                    idx = parts.index("products")
+                    if len(parts) > idx + 1:
+                        prod_id = parts[idx + 1]
+                        new_href = f"{self.eoapi_url}/collections/{prod_id}"
             
             if new_href:
                 link["href"] = new_href
@@ -184,7 +221,8 @@ class OSCCrawler:
                 # Fallback: make it an absolute link to the source GitHub repository
                 # This ensures the link isn't broken even if we can't map it to the API
                 clean_href = href.lstrip('./').replace('../', '', 2)
-                link["href"] = f"{self.base_url}/{clean_href}"
+                abs_href = f"{self.base_url}/{clean_href}"
+                link["href"] = self._get_source_url(abs_href)
             
             fixed_links.append(link)
             
@@ -217,7 +255,7 @@ class OSCCrawler:
                 if self.update:
                     # Update existing
                     resp = self.session.put(individual_url, json=payload)
-                    
+
                     if resp.status_code in (200, 204):
                         self.stats["api_success"] += 1
                         return True
@@ -229,6 +267,7 @@ class OSCCrawler:
                     # Skip (consider success as it exists)
                     self.stats["api_success"] += 1
                     return True
+
             else:
                 self.stats["api_errors"] += 1
                 console.print(f"[bold red]    [!] Failed to ingest {entity_id} at {target_url}: {resp.text}[/bold red]")
@@ -307,15 +346,15 @@ class OSCCrawler:
             if status in (200, 201):
                 self.stats["api_success"] += 1
             elif status == 409:
-                if self.update:
-                    async with session.put(individual_url, json=payload) as resp:
-                        if resp.status in (200, 204):
-                            self.stats["api_success"] += 1
-                        else:
-                            self.stats["api_errors"] += 1
-                            console.print(f"[bold red]    [!] Failed to update {entity_id}: {await resp.text()}[/bold red]")
-                else:
-                    self.stats["api_success"] += 1
+               if self.update:
+                   async with session.put(individual_url, json=payload) as resp:
+                       if resp.status in (200, 204):
+                           self.stats["api_success"] += 1
+                       else:
+                           self.stats["api_errors"] += 1
+                           console.print(f"[bold red]    [!] Failed to update {entity_id}: {await resp.text()}[/bold red]")
+               else:
+                   self.stats["api_success"] += 1
             else:
                 self.stats["api_errors"] += 1
                 console.print(f"[bold red]    [!] Failed to ingest {entity_id} at {target_url}: {text}[/bold red]")
@@ -373,7 +412,7 @@ class OSCCrawler:
         
         # If no explicit collection_id was passed, it's an experiment being processed directly
         if not target_col_id:
-            workflow_ref = properties.get("osc:workflow")
+            workflow_ref = properties.get("osc:workflow") or properties.get("kb:workflow")
             if workflow_ref:
                 # Map the experiment directly into its parent workflow collection
                 if "workflow" not in workflow_ref.lower():
@@ -383,13 +422,28 @@ class OSCCrawler:
                 target_col_id = "experiments" # fallback
             
         # Ensure that if it's linking to a workflow, it uses the correct suffix
+        # And rename osc:workflow to kb:workflow to comply with STAC OSC extension
         if "osc:workflow" in properties:
-            wf_ref = properties["osc:workflow"]
+            wf_ref = properties.pop("osc:workflow")
             if "workflow" not in wf_ref.lower():
-                properties["osc:workflow"] = f"{wf_ref}-workflow"
+                wf_ref = f"{wf_ref}-workflow"
+            properties["kb:workflow"] = wf_ref
+        elif "kb:workflow" in properties:
+            wf_ref = properties["kb:workflow"]
+            if "workflow" not in wf_ref.lower():
+                properties["kb:workflow"] = f"{wf_ref}-workflow"
 
         item = pystac.Item(id=record_id, geometry=geom, bbox=bbox, datetime=dt_obj, properties=properties)
         item.collection_id = target_col_id
+        
+        # Add self link pointing to source if needed
+        # It will be processed further in prepare_links
+        item.add_link(pystac.Link(rel="self", target=href, media_type="application/json"))
+        
+        if self.add_source_links:
+            # Also add canonical link which is less likely to be rewritten by APIs
+            item.add_link(pystac.Link(rel="canonical", target=href, media_type="application/json"))
+
         return item.to_dict()
 
     async def _async_process_and_ingest(self, session: aiohttp.ClientSession, sem: asyncio.Semaphore, href: str, links: List[Any], collection_id: Optional[str] = None, category: Optional[str] = None) -> int:
@@ -496,7 +550,7 @@ class OSCCrawler:
             collection.keywords = keywords
 
         start_time = time.time()
-        col_dict = self.prepare_collection(collection, collection.links)
+        col_dict = self.prepare_collection(collection, collection.links, source_url=entity_link.get_absolute_href())
         
         # Ingest the collection synchronously first
         success = self.ingest_entity("collections", col_dict)
@@ -620,7 +674,7 @@ class OSCCrawler:
                                     workflow_collection.keywords = ["workflow"]
                                     
                                     # Ingest Collection (Workflows have no items of their own)
-                                    col_dict = self.prepare_collection(workflow_collection, all_links)
+                                    col_dict = self.prepare_collection(workflow_collection, all_links, source_url=record_href)
                                     if self.ingest_entity("collections", col_dict):
                                         console.print(f"  [+] Ingested Workflow Collection: [bold]{workflow_id}[/bold]")
                                         self.stats["workflows_processed"] += 1

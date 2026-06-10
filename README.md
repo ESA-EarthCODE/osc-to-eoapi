@@ -28,7 +28,20 @@ osc-to-eoapi crawl [OPTIONS]
 - `--kb-cache TEXT`: Path to a local JSON file to cache the taxonomies (variables, projects, etc.) to significantly speed up subsequent runs. In order to disable it set it to an empty string. (Default: `kb_cache.json`)
 - `--skip-collection TEXT`: Collection ID to skip if it is already present in the target API. Can be provided multiple times (e.g., `--skip-collection "col1" --skip-collection "col2"`).
 - `--category TEXT`: Specific category to crawl. Defaults to crawling all categories (`products`, `experiments`, `workflows`). Can be provided multiple times (e.g., `--category workflows --category experiments`).
+- `--add-source-links`: Add the source catalog URL as a `canonical` link (and attempt to set `self` links).
+- `--links-self-base-url TEXT`: Override the base URL for `self` links (e.g., to point to GitHub Pages instead of raw GitHub content).
 - `--debug`: Enable verbose debug logging to trace the recursive traversal of external catalogs and item discovery. Useful for identifying bottlenecks or infinite loops in remote datasets.
+
+### Configuring Source Links (e.g., GitHub Pages)
+
+You can configure the crawler to preserve the original source links for STAC collections and items rather than generating API-relative links. This is especially useful if your API acts as a discovery layer for static catalogs hosted on GitHub Pages.
+
+```bash
+osc-to-eoapi crawl \
+    --github-url https://raw.githubusercontent.com/ESA-EarthCODE/open-science-catalog-metadata/main/catalog.json \
+    --add-source-links \
+    --source-base-url https://esa-earthcode.github.io/open-science-catalog-metadata
+```
 
 ### Loading Queryables
 
@@ -100,4 +113,5 @@ A `docker-compose.yml` is provided to easily spin up a local PgSTAC database and
 5. Tear down the local infrastructure and wipe test data when finished:
    ```bash
    docker compose down -v
+   ```
    ```

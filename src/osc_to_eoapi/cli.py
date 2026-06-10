@@ -27,6 +27,8 @@ def crawl(
     kb_cache: str = typer.Option("kb_cache.json", "--kb-cache", help="Path to cache the knowledge base. Set to empty string '' to disable."),
     skip_collection: Optional[List[str]] = typer.Option(None, "--skip-collection", help="Collection ID to skip if already present in the API"),
     categories: Optional[List[str]] = typer.Option(["products", "experiments", "workflows"], "--category", help="Categories to crawl. Can be specified multiple times (e.g. --category workflows --category experiments)"),
+    add_source_links: bool = typer.Option(False, "--add-source-links", help="Add source catalog URLs as a 'canonical' link, and attempt to set 'self' links"),
+    source_base_url: Optional[str] = typer.Option(None, "--source-base-url", help="Override the base URL for source links (e.g. to point to GitHub Pages instead of raw content)"),
     debug: bool = typer.Option(False, "--debug", help="Enable verbose debug logging for catalog traversal"),
 ):
     """
@@ -51,6 +53,8 @@ def crawl(
         kb_cache_file=actual_kb_cache,
         skip_collections=skip_collection,
         categories=categories,
+        add_source_links=add_source_links,
+        source_base_url=source_base_url,
         debug=debug
     )
     crawler.run()
@@ -71,9 +75,9 @@ def load_queryables(
             "title": "ESA OSC Flattened Queryables",
             "properties": {
                 "osc:project": {"description": "The ID of the associated project", "type": "string"},
-                "osc:theme": {"description": "The ID of the associated theme", "type": "string"},
-                "osc:eo-mission": {"description": "The ID of the associated mission", "type": "string"},
-                "osc:variable": {"description": "The ID of the associated variable", "type": "string"},
+                "kb:theme": {"description": "The ID of the associated theme", "type": "string"},
+                "kb:eo-mission": {"description": "The ID of the associated mission", "type": "string"},
+                "kb:variable": {"description": "The ID of the associated variable", "type": "string"},
                 "kb:project:title": {"description": "The human-readable title of the project", "type": "string"},
                 "kb:theme:title": {"description": "The human-readable title of the theme", "type": "string"},
                 "kb:eo-mission:title": {"description": "The human-readable title of the mission", "type": "string"},
