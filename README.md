@@ -30,7 +30,22 @@ osc-to-eoapi crawl [OPTIONS]
 - `--category TEXT`: Specific category to crawl. Defaults to crawling all categories (`products`, `experiments`, `workflows`). Can be provided multiple times (e.g., `--category workflows --category experiments`).
 - `--add-source-links`: Add the source catalog URL as a `canonical` link (and attempt to set `self` links).
 - `--links-self-base-url TEXT`: Override the base URL for `self` links (e.g., to point to GitHub Pages instead of raw GitHub content).
+- `--direct-db`: Enable direct database ingestion using `pypgstac`. This bypasses the STAC API for writes, resulting in much faster ingestion. It uses a single database transaction, ensuring that if the crawl fails, the database remains untouched.
+- `--db-dsn TEXT`: Connection string for the PgSTAC database (e.g., `postgresql://user:pass@localhost:5432/eoapi`). If not provided, the crawler will automatically use standard PostgreSQL environment variables (`PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGPORT`).
 - `--debug`: Enable verbose debug logging to trace the recursive traversal of external catalogs and item discovery. Useful for identifying bottlenecks or infinite loops in remote datasets.
+
+### Direct Database Ingestion (Recommended)
+
+For large crawls, it is recommended to use direct database ingestion. This mode writes items to a temporary local file during the crawl and loads them into the database in a single, fast transaction once the crawl is complete. This keeps the API fully populated with existing data until the very end and is significantly faster than HTTP-based ingestion.
+
+```bash
+# Using explicit DSN
+osc-to-eoapi crawl --direct-db --db-dsn "postgresql://postgres:adminpassword@localhost:5432/eoapi"
+
+# Using environment variables from .env
+set -a; source .env; set +a
+osc-to-eoapi crawl --direct-db
+```
 
 ### Configuring Source Links (e.g., GitHub Pages)
 
@@ -104,9 +119,13 @@ A `docker-compose.yml` is provided to easily spin up a local PgSTAC database and
    osc-to-eoapi load-queryables
    ```
 
-4. Run the crawler against the local API (running on `http://localhost:8080`):
+4. Run the crawler against the local API using direct database ingestion:
    ```bash
-   osc-to-eoapi crawl --test-endpoint --reset-db --eoapi-url http://localhost:8080
+   # Load environment variables
+   set -a; source .env; set +a
+   
+   # Run the crawl transactionally
+   osc-to-eoapi crawl --test-endpoint --reset-db --direct-db
    ```
    *(Add `--crawl-external` if you want to test recursive external link crawling).*
 

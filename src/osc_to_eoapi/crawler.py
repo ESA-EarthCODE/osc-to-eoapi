@@ -5,6 +5,8 @@ import requests
 import asyncio
 import aiohttp
 import pystac
+from pypgstac.db import PgstacDB
+from pypgstac.load import Loader, Methods
 from datetime import datetime, timezone
 from dateutil.parser import parse
 from typing import Dict, List, Optional, Set, Any
@@ -26,6 +28,9 @@ class OSCCrawler:
         categories: Optional[List[str]] = None,
         add_source_links: bool = False,
         source_base_url: Optional[str] = None,
+        direct_db: bool = False,
+        db_dsn: Optional[str] = None,
+        reset_db: bool = False,
         debug: bool = False,
     ):
         self.github_url = github_url
@@ -39,6 +44,9 @@ class OSCCrawler:
         self.categories = categories or ["products", "experiments", "workflows"]
         self.add_source_links = add_source_links
         self.source_base_url = source_base_url.rstrip('/') if source_base_url else None
+        self.direct_db = direct_db
+        self.db_dsn = db_dsn
+        self.reset_db = reset_db
         self.debug = debug
         self.session = requests.Session()
         
@@ -67,6 +75,15 @@ class OSCCrawler:
             "type": "Polygon",
             "coordinates": [[[-180.0, -90.0], [180.0, -90.0], [180.0, 90.0], [-180.0, 90.0], [-180.0, -90.0]]]
         }
+
+        self.direct_collections = []
+        self.items_file = "items_batch.ndjson"
+        self.file_lock = asyncio.Lock()
+        
+        if self.direct_db:
+            # Ensure items file is clean at start
+            if os.path.exists(self.items_file):
+                os.remove(self.items_file)
 
     def _get_source_url(self, url: str) -> str:
         """Translates a source URL to use the source_base_url if configured."""
@@ -233,6 +250,15 @@ class OSCCrawler:
         payload["links"] = self.prepare_links(payload)
         entity_id = payload.get("id")
         
+        if self.direct_db:
+            if "items" not in endpoint:
+                self.direct_collections.append(payload)
+                return True
+            # Item ingestion via sync ingest_entity is not typical in this crawler but handled for completeness
+            with open(self.items_file, "a") as f:
+                f.write(json.dumps(payload) + "\n")
+            return True
+
         try:
             target_url = f"{self.eoapi_url}/{endpoint}"
             individual_url = target_url
@@ -326,8 +352,16 @@ class OSCCrawler:
 
     async def _async_ingest_entity(self, session: aiohttp.ClientSession, endpoint: str, payload: Dict[str, Any]):
         payload["links"] = self.prepare_links(payload)
-        target_url = f"{self.eoapi_url}/{endpoint}"
         entity_id = payload.get("id")
+
+        if self.direct_db:
+            async with self.file_lock:
+                with open(self.items_file, "a") as f:
+                    f.write(json.dumps(payload) + "\n")
+            self.stats["api_success"] += 1
+            return
+
+        target_url = f"{self.eoapi_url}/{endpoint}"
         individual_url = target_url
         if "items" not in endpoint:
             individual_url = f"{target_url}/{entity_id}"
@@ -561,7 +595,8 @@ class OSCCrawler:
         if category in ["products", None]:
             self.stats["products_processed"] += 1
             
-        console.print(f"  [+] Ingested Collection: [bold]{collection.id}[/bold]")
+        status_msg = "Ingested Collection" if not self.direct_db else "Processed (Queued) Collection"
+        console.print(f"  [+] {status_msg}: [bold]{collection.id}[/bold]")
         
         try:
             loop = asyncio.get_event_loop()
@@ -579,7 +614,8 @@ class OSCCrawler:
             self.stats["experiments_processed"] += items_ingested
         
         elapsed_time = time.time() - start_time
-        console.print(f"      └── Fetched and ingested [bold cyan]{items_ingested}[/bold cyan] items in [yellow]{elapsed_time:.2f}s[/yellow]")
+        action_word = "ingested" if not self.direct_db else "queued"
+        console.print(f"      └── Fetched and {action_word} [bold cyan]{items_ingested}[/bold cyan] items in [yellow]{elapsed_time:.2f}s[/yellow]")
 
     def crawl_catalog(self, catalog: pystac.Catalog, is_root: bool = False, is_external: bool = False):
         href = catalog.get_self_href()
@@ -676,7 +712,8 @@ class OSCCrawler:
                                     # Ingest Collection (Workflows have no items of their own)
                                     col_dict = self.prepare_collection(workflow_collection, all_links, source_url=record_href)
                                     if self.ingest_entity("collections", col_dict):
-                                        console.print(f"  [+] Ingested Workflow Collection: [bold]{workflow_id}[/bold]")
+                                        status_msg = "Ingested Workflow Collection" if not self.direct_db else "Processed (Queued) Workflow Collection"
+                                        console.print(f"  [+] {status_msg}: [bold]{workflow_id}[/bold]")
                                         self.stats["workflows_processed"] += 1
                                     else:
                                         console.print(f"  [red]  [!] Failed to ingest workflow collection {workflow_id}[/red]")
@@ -727,6 +764,46 @@ class OSCCrawler:
                     console.print(f"[blue]  -> Crawling external catalog: {child_href}[/blue]")
                     self.crawl_catalog(child, is_external=True)
 
+    def _load_to_pgstac(self):
+        if not self.direct_db:
+            return
+
+        console.print(f"\n[bold green][+] Starting transactional batch load to PgSTAC...[/bold green]")
+        try:
+            # If db_dsn is None, PgstacDB naturally falls back to libpq env vars
+            with PgstacDB(dsn=self.db_dsn) as db:
+                with db.connect().transaction():
+                    if self.reset_db:
+                        console.print("  -> Resetting database (deleting existing collections)...")
+                        existing_collections = db.query("SELECT id FROM collections")
+                        for col in existing_collections:
+                            db.query("SELECT delete_collection(%s)", (col[0],))
+                    
+                    loader = Loader(db=db)
+                    
+                    if self.direct_collections:
+                        console.print(f"  -> Loading {len(self.direct_collections)} collections...")
+                        loader.load_collections(self.direct_collections, insert_mode=Methods.upsert)
+                    
+                    if os.path.exists(self.items_file):
+                        # Count items roughly
+                        item_count = 0
+                        with open(self.items_file, "r") as f:
+                            for _ in f: item_count += 1
+                        
+                        console.print(f"  -> Loading {item_count} items from {self.items_file}...")
+                        loader.load_items(self.items_file, insert_mode=Methods.upsert)
+
+            console.print("[bold green][V] Successfully loaded all data into PgSTAC![/bold green]")
+            
+            # Cleanup
+            if os.path.exists(self.items_file):
+                os.remove(self.items_file)
+                
+        except Exception as e:
+            console.print(f"[bold red][!] PgSTAC batch load failed: {e}[/bold red]")
+            raise
+
     def run(self):
         console.print(f"[bold cyan]Starting Crawl from: {self.github_url}[/bold cyan]")
         try:
@@ -738,6 +815,10 @@ class OSCCrawler:
         self.build_knowledge_base(root_catalog)
         self.crawl_catalog(root_catalog, is_root=True)
         
+        # New: Batch load to PgSTAC
+        if self.direct_db:
+            self._load_to_pgstac()
+        
         console.print("\n" + "=" * 50)
         console.print("[bold]CRAWL SUMMARY[/bold]")
         console.print("=" * 50)
@@ -746,7 +827,13 @@ class OSCCrawler:
         console.print(f"Workflows Ingested:    {self.stats['workflows_processed']}")
         console.print(f"Experiments Ingested:  {self.stats['experiments_processed']}")
         console.print(f"Collections Skipped:   {self.stats['collections_skipped']}")
-        console.print(f"Successful API Posts:  {self.stats['api_success']}")
-        console.print(f"API Errors (Failed):   {self.stats['api_errors']}")
+        
+        if not self.direct_db:
+            console.print(f"Successful API Posts:  {self.stats['api_success']}")
+            console.print(f"API Errors (Failed):   {self.stats['api_errors']}")
+        else:
+            console.print(f"Records Queued (DB):   {self.stats['api_success']}")
+            console.print(f"Local IO Errors:       {self.stats['api_errors']}")
+            
         console.print(f"Fetch/Read Errors:     {self.stats['fetch_errors']}")
         console.print("=" * 50)
