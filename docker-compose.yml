@@ -1,6 +1,6 @@
 services:
   db:
-    image: ghcr.io/stac-utils/pgstac:v0.8.5
+    image: ghcr.io/stac-utils/pgstac:v0.9.11
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: adminpassword
@@ -14,7 +14,7 @@ services:
       retries: 5
 
   stac-api:
-    image: ghcr.io/stac-utils/stac-fastapi-pgstac:2.4.9
+    image: ghcr.io/stac-utils/stac-fastapi-pgstac:4.0.0
     command: uvicorn stac_fastapi.pgstac.app:app --host 0.0.0.0 --port 8080
     environment:
       POSTGRES_USER: postgres

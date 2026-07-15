@@ -29,6 +29,8 @@ def crawl(
     categories: Optional[List[str]] = typer.Option(["products", "experiments", "workflows"], "--category", help="Categories to crawl. Can be specified multiple times (e.g. --category workflows --category experiments)"),
     add_source_links: bool = typer.Option(False, "--add-source-links", help="Add source catalog URLs as a 'canonical' link, and attempt to set 'self' links"),
     source_base_url: Optional[str] = typer.Option(None, "--source-base-url", help="Override the base URL for source links (e.g. to point to GitHub Pages instead of raw content)"),
+    direct_db: bool = typer.Option(False, "--direct-db", help="Enable direct database ingestion using pypgstac, bypassing the STAC API for writes"),
+    db_dsn: Optional[str] = typer.Option(None, "--db-dsn", help="Connection string for the PgSTAC database. If not provided, standard PostgreSQL environment variables (PGHOST, PGUSER, etc.) will be used."),
     debug: bool = typer.Option(False, "--debug", help="Enable verbose debug logging for catalog traversal"),
 ):
     """
@@ -38,7 +40,7 @@ def crawl(
         if not test_endpoint(eoapi_url):
             raise typer.Exit(code=1)
             
-    if reset_db:
+    if reset_db and not direct_db:
         reset_database(eoapi_url)
         
     # Convert empty string to None to disable caching
@@ -55,6 +57,9 @@ def crawl(
         categories=categories,
         add_source_links=add_source_links,
         source_base_url=source_base_url,
+        direct_db=direct_db,
+        db_dsn=db_dsn,
+        reset_db=reset_db,
         debug=debug
     )
     crawler.run()
