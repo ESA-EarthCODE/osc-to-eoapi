@@ -9,6 +9,7 @@ from pypgstac.db import PgstacDB
 from pypgstac.load import Loader, Methods
 from datetime import datetime, timezone
 from dateutil.parser import parse
+from urllib.parse import urljoin
 from typing import Dict, List, Optional, Set, Any
 from rich.console import Console
 from rich.progress import Progress
@@ -79,6 +80,7 @@ class OSCCrawler:
         self.direct_collections = []
         self.items_file = "items_batch.ndjson"
         self.file_lock = asyncio.Lock()
+        self.ingested_item_ids: Set[str] = set()
         
         if self.direct_db:
             # Ensure items file is clean at start
@@ -255,6 +257,11 @@ class OSCCrawler:
                 self.direct_collections.append(payload)
                 return True
             # Item ingestion via sync ingest_entity is not typical in this crawler but handled for completeness
+            target_col_id = payload.get("collection", "")
+            item_key = f"{target_col_id}:{entity_id}"
+            if item_key in self.ingested_item_ids:
+                return True
+            self.ingested_item_ids.add(item_key)
             with open(self.items_file, "a") as f:
                 f.write(json.dumps(payload) + "\n")
             return True
@@ -355,9 +362,20 @@ class OSCCrawler:
         entity_id = payload.get("id")
 
         if self.direct_db:
-            async with self.file_lock:
-                with open(self.items_file, "a") as f:
-                    f.write(json.dumps(payload) + "\n")
+            if "items" in endpoint:
+                target_col_id = payload.get("collection", "")
+                item_key = f"{target_col_id}:{entity_id}"
+                async with self.file_lock:
+                    if item_key in self.ingested_item_ids:
+                        return
+                    self.ingested_item_ids.add(item_key)
+                    with open(self.items_file, "a") as f:
+                        f.write(json.dumps(payload) + "\n")
+            else:
+                async with self.file_lock:
+                    with open(self.items_file, "a") as f:
+                        f.write(json.dumps(payload) + "\n")
+            
             self.stats["api_success"] += 1
             return
 
@@ -470,6 +488,17 @@ class OSCCrawler:
         item = pystac.Item(id=record_id, geometry=geom, bbox=bbox, datetime=dt_obj, properties=properties)
         item.collection_id = target_col_id
         
+        # Preserve assets and ensure absolute HREFs
+        if "assets" in record_data:
+            for asset_key, asset_dict in record_data["assets"].items():
+                if "href" in asset_dict and not asset_dict["href"].startswith(("http", "s3://")):
+                    asset_dict["href"] = urljoin(href, asset_dict["href"])
+                item.add_asset(asset_key, pystac.Asset.from_dict(asset_dict))
+
+        # Preserve extensions
+        if "stac_extensions" in record_data:
+            item.stac_extensions = list(set(item.stac_extensions + record_data["stac_extensions"]))
+
         # Add self link pointing to source if needed
         # It will be processed further in prepare_links
         item.add_link(pystac.Link(rel="self", target=href, media_type="application/json"))
@@ -782,8 +811,14 @@ class OSCCrawler:
                     loader = Loader(db=db)
                     
                     if self.direct_collections:
-                        console.print(f"  -> Loading {len(self.direct_collections)} collections...")
-                        loader.load_collections(self.direct_collections, insert_mode=Methods.upsert)
+                        # Deduplicate collections based on ID
+                        unique_collections = {}
+                        for col in self.direct_collections:
+                            unique_collections[col["id"]] = col
+                        deduped_collections = list(unique_collections.values())
+
+                        console.print(f"  -> Loading {len(deduped_collections)} collections...")
+                        loader.load_collections(deduped_collections, insert_mode=Methods.upsert)
                     
                     if os.path.exists(self.items_file):
                         # Count items roughly
