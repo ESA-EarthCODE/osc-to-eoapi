@@ -450,7 +450,7 @@ class OSCCrawler:
             if cat_keyword not in properties["keywords"]:
                 properties["keywords"].append(cat_keyword)
             
-        dt_str = properties.get("datetime") or properties.get("start_datetime")
+        dt_str = properties.get("datetime") or properties.get("start_datetime") or properties.get("created") or properties.get("updated")
         dt_obj = None
         if dt_str:
             try:
@@ -460,7 +460,7 @@ class OSCCrawler:
                 pass
                 
         if dt_obj is None:
-            # Fallback to the start of our default temporal extent for static metadata
+            # Fallback to a safe date for static metadata if absolutely no dates are provided
             dt_obj = datetime(1970, 1, 1, tzinfo=timezone.utc)
                 
         # Determine target collection
