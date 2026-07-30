@@ -42,7 +42,7 @@ class OSCCrawler:
         self.crawl_external = crawl_external
         self.kb_cache_file = kb_cache_file
         self.skip_collections = set(skip_collections or [])
-        self.categories = categories or ["products", "experiments", "workflows"]
+        self.categories = categories or ["products", "workflows", "experiments"]
         self.add_source_links = add_source_links
         self.source_base_url = source_base_url.rstrip('/') if source_base_url else None
         self.direct_db = direct_db
@@ -223,8 +223,6 @@ class OSCCrawler:
                     idx = parts.index("workflows")
                     if len(parts) > idx + 1:
                         wf_id = parts[idx + 1]
-                        if "workflow" not in wf_id.lower():
-                            wf_id = f"{wf_id}-workflow"
                         new_href = f"{self.eoapi_url}/collections/{wf_id}"
                 elif "products" in parts:
                     idx = parts.index("products")
@@ -452,12 +450,18 @@ class OSCCrawler:
             if cat_keyword not in properties["keywords"]:
                 properties["keywords"].append(cat_keyword)
             
-        dt_obj = datetime.now(timezone.utc)
-        if "datetime" in properties and properties["datetime"]:
+        dt_str = properties.get("datetime") or properties.get("start_datetime")
+        dt_obj = None
+        if dt_str:
             try:
-                dt_obj = parse(properties["datetime"])
+                dt_obj = parse(dt_str)
                 if dt_obj.tzinfo is None: dt_obj = dt_obj.replace(tzinfo=timezone.utc)
-            except: pass
+            except:
+                pass
+                
+        if dt_obj is None:
+            # Fallback to the start of our default temporal extent for static metadata
+            dt_obj = datetime(1970, 1, 1, tzinfo=timezone.utc)
                 
         # Determine target collection
         target_col_id = collection_id
@@ -467,23 +471,13 @@ class OSCCrawler:
             workflow_ref = properties.get("osc:workflow") or properties.get("kb:workflow")
             if workflow_ref:
                 # Map the experiment directly into its parent workflow collection
-                if "workflow" not in workflow_ref.lower():
-                    workflow_ref = f"{workflow_ref}-workflow"
                 target_col_id = workflow_ref
             else:
                 target_col_id = "experiments" # fallback
             
-        # Ensure that if it's linking to a workflow, it uses the correct suffix
-        # And rename osc:workflow to kb:workflow to comply with STAC OSC extension
+        # Rename osc:workflow to kb:workflow to comply with STAC OSC extension
         if "osc:workflow" in properties:
-            wf_ref = properties.pop("osc:workflow")
-            if "workflow" not in wf_ref.lower():
-                wf_ref = f"{wf_ref}-workflow"
-            properties["kb:workflow"] = wf_ref
-        elif "kb:workflow" in properties:
-            wf_ref = properties["kb:workflow"]
-            if "workflow" not in wf_ref.lower():
-                properties["kb:workflow"] = f"{wf_ref}-workflow"
+            properties["kb:workflow"] = properties.pop("osc:workflow")
 
         item = pystac.Item(id=record_id, geometry=geom, bbox=bbox, datetime=dt_obj, properties=properties)
         item.collection_id = target_col_id
@@ -695,9 +689,7 @@ class OSCCrawler:
                         elif category == "workflows":
                             for entity_link in child.get_item_links():
                                 record_href = entity_link.get_absolute_href()
-                                # Append -workflow if not already present
-                                raw_id = record_href.split('/')[-2]
-                                workflow_id = raw_id if "workflow" in raw_id.lower() else f"{raw_id}-workflow"
+                                workflow_id = record_href.split('/')[-2]
                                 
                                 if workflow_id in self.skip_collections and self.collection_exists(workflow_id):
                                     console.print(f"  [bold yellow][Skip] Workflow Collection {workflow_id} already exists.[/bold yellow]")
